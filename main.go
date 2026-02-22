@@ -103,9 +103,9 @@ func main() {
 	contextMgr := NewContextManager(filepath.Join(dataDir, "brain_contexts.json"))
 	app.ctx = contextMgr
 
-	// Initialize version manager with BadgerDB backend for versioning
+	// Initialize version manager with JSON-based storage for versioning
 	versionDir := filepath.Join(dataDir, "memory_versions")
-	versionMgr, err := NewMemoryVersionManager(versionDir)
+	versionMgr, err := NewMemoryVersionManager(versionDir, logger)
 	if err != nil {
 		logger.Printf("Failed to initialize version manager: %v", err)
 		os.Exit(1)

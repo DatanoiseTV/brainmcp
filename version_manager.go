@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -16,25 +18,35 @@ type MemoryVersionManager struct {
 	mu        sync.RWMutex
 	versionDB map[string]*MemoryWithHistory
 	filePath  string
+	logger    *log.Logger
 }
 
 // NewMemoryVersionManager creates a new version manager with JSON-based storage.
-func NewMemoryVersionManager(dirPath string) (*MemoryVersionManager, error) {
+// Pass a logger to enable activity logging, or nil to disable logging.
+func NewMemoryVersionManager(dirPath string, logger *log.Logger) (*MemoryVersionManager, error) {
 	// Ensure directory exists
 	if err := os.MkdirAll(dirPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create version directory: %w", err)
+	}
+
+	// If no logger provided, use discard
+	if logger == nil {
+		logger = log.New(io.Discard, "", 0)
 	}
 
 	filePath := filepath.Join(dirPath, "memory_versions.json")
 	mvm := &MemoryVersionManager{
 		versionDB: make(map[string]*MemoryWithHistory),
 		filePath:  filePath,
+		logger:    logger,
 	}
 
 	// Load existing version history if it exists
 	if err := mvm.load(); err != nil && !os.IsNotExist(err) {
 		// Log but don't fail - start fresh if corrupted
-		fmt.Fprintf(os.Stderr, "Warning: Failed to load version history: %v. Starting fresh.\n", err)
+		mvm.logger.Printf("Warning: Failed to load version history: %v. Starting fresh.", err)
+	} else if err == nil {
+		mvm.logger.Printf("Loaded %d versioned memories from disk", len(mvm.versionDB))
 	}
 
 	return mvm, nil
@@ -71,6 +83,7 @@ func (m *MemoryVersionManager) save() error {
 		return fmt.Errorf("failed to finalize version file: %w", err)
 	}
 
+	m.logger.Printf("Persisted %d versioned memories to disk", len(m.versionDB))
 	return nil
 }
 
@@ -101,6 +114,7 @@ func (m *MemoryVersionManager) AddVersion(memoryID, content, clientID, changeNot
 			UpdatedAt:      time.Now(),
 			Metadata:       make(map[string]string),
 		}
+		m.logger.Printf("Creating new version history for memory %q", memoryID)
 	}
 
 	// Add new version
@@ -119,6 +133,7 @@ func (m *MemoryVersionManager) AddVersion(memoryID, content, clientID, changeNot
 	history.Tags = tags
 
 	m.versionDB[memoryID] = history
+	m.logger.Printf("Added version %d to memory %q (client: %s)", newVersion.VersionNumber, memoryID, clientID)
 
 	// Persist to disk
 	return m.save()
@@ -152,6 +167,7 @@ func (m *MemoryVersionManager) GetHistory(memoryID string) (*MemoryWithHistory, 
 		return nil, fmt.Errorf("memory %q not found", memoryID)
 	}
 
+	m.logger.Printf("Retrieved history for memory %q (%d versions)", memoryID, len(history.Versions))
 	return history, nil
 }
 
@@ -220,6 +236,7 @@ func (m *MemoryVersionManager) DeleteMemoryHistory(memoryID string) error {
 	}
 
 	delete(m.versionDB, memoryID)
+	m.logger.Printf("Deleted history for memory %q", memoryID)
 	return m.save()
 }
 
@@ -258,6 +275,8 @@ func (m *MemoryVersionManager) BatchCreateMemories(memories []struct {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.logger.Printf("Starting batch create operation for %d memories", len(memories))
+
 	for _, mem := range memories {
 		history := &MemoryWithHistory{
 			ID:             mem.ID,
@@ -286,9 +305,11 @@ func (m *MemoryVersionManager) BatchCreateMemories(memories []struct {
 		result.Failed = result.Successful
 		result.Successful = 0
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to save: %v", err))
+		m.logger.Printf("Batch create failed: %v", err)
 		return result, err
 	}
 
+	m.logger.Printf("Batch create completed: %d successful, %d failed", result.Successful, result.Failed)
 	return result, nil
 }
 
@@ -305,6 +326,8 @@ func (m *MemoryVersionManager) BatchDeleteMemories(memoryIDs []string) (BatchOpe
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.logger.Printf("Starting batch delete operation for %d memories", len(memoryIDs))
+
 	for _, id := range memoryIDs {
 		if _, exists := m.versionDB[id]; exists {
 			delete(m.versionDB, id)
@@ -320,9 +343,11 @@ func (m *MemoryVersionManager) BatchDeleteMemories(memoryIDs []string) (BatchOpe
 		result.Failed = result.Total
 		result.Successful = 0
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to save: %v", err))
+		m.logger.Printf("Batch delete failed: %v", err)
 		return result, err
 	}
 
+	m.logger.Printf("Batch delete completed: %d successful, %d failed", result.Successful, result.Failed)
 	return result, nil
 }
 
@@ -338,6 +363,8 @@ func (m *MemoryVersionManager) BatchAddTags(memoryIDs []string, tags []string) (
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	m.logger.Printf("Starting batch add tags operation: %d memories, %d tags", len(memoryIDs), len(tags))
 
 	for _, id := range memoryIDs {
 		history, exists := m.versionDB[id]
@@ -369,9 +396,11 @@ func (m *MemoryVersionManager) BatchAddTags(memoryIDs []string, tags []string) (
 		result.Failed = result.Total
 		result.Successful = 0
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to save: %v", err))
+		m.logger.Printf("Batch add tags failed: %v", err)
 		return result, err
 	}
 
+	m.logger.Printf("Batch add tags completed: %d successful, %d failed", result.Successful, result.Failed)
 	return result, nil
 }
 
@@ -387,6 +416,8 @@ func (m *MemoryVersionManager) BatchRemoveTags(memoryIDs []string, tags []string
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	m.logger.Printf("Starting batch remove tags operation: %d memories, %d tags", len(memoryIDs), len(tags))
 
 	for _, id := range memoryIDs {
 		history, exists := m.versionDB[id]
@@ -420,8 +451,10 @@ func (m *MemoryVersionManager) BatchRemoveTags(memoryIDs []string, tags []string
 		result.Failed = result.Total
 		result.Successful = 0
 		result.Errors = append(result.Errors, fmt.Sprintf("Failed to save: %v", err))
+		m.logger.Printf("Batch remove tags failed: %v", err)
 		return result, err
 	}
 
+	m.logger.Printf("Batch remove tags completed: %d successful, %d failed", result.Successful, result.Failed)
 	return result, nil
 }
