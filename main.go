@@ -61,7 +61,6 @@ func main() {
 	}
 	app.collection = col
 
-	// Load existing memory from file if it exists and isn't empty
 	if info, err := os.Stat(dbPath); err == nil && info.Size() > 0 {
 		err = db.ImportFromFile(dbPath, "")
 		if err != nil && app.testMode {
@@ -74,10 +73,12 @@ func main() {
 		return
 	}
 
-	s := server.NewMCPServer("brain-mcp", "3.0.0")
+	s := server.NewMCPServer("brain-mcp", "1.1.0")
+
+	// --- Tool Registration ---
 
 	s.AddTool(mcp.NewTool("remember",
-		mcp.WithDescription("Stores information with semantic vectors for long-term recall."),
+		mcp.WithDescription("Stores or updates information with semantic vectors for long-term recall."),
 		mcp.WithString("id", mcp.Required(), mcp.Description("Unique ID for this memory")),
 		mcp.WithString("content", mcp.Required(), mcp.Description("The text content to remember")),
 		mcp.WithString("metadata", mcp.Description("Optional metadata")),
@@ -88,11 +89,26 @@ func main() {
 		mcp.WithString("query", mcp.Required(), mcp.Description("Natural language search query")),
 	), app.searchHandler)
 
+	s.AddTool(mcp.NewTool("delete_memory",
+		mcp.WithDescription("Removes a specific memory from the brain by its ID."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("The unique ID of the memory to delete")),
+	), app.deleteHandler)
+
+	s.AddTool(mcp.NewTool("list_memories",
+		mcp.WithDescription("Returns a list of all stored memory IDs and a snippet of their content."),
+	), app.listHandler)
+
+	s.AddTool(mcp.NewTool("wipe_all_memories",
+		mcp.WithDescription("Completely clears the brain. Use with caution."),
+	), app.wipeHandler)
+
 	log.Println("BrainMCP Server starting on Stdio...")
 	if err := server.ServeStdio(s); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }
+
+// --- SDK Embedder ---
 
 func (a *App) makeGeminiEmbedder() chromem.EmbeddingFunc {
 	return func(ctx context.Context, text string) ([]float32, error) {
@@ -101,22 +117,18 @@ func (a *App) makeGeminiEmbedder() chromem.EmbeddingFunc {
 			taskType = "RETRIEVAL_QUERY"
 			text = strings.TrimPrefix(text, "QUERY_TASK:")
 		}
-
 		contents := []*genai.Content{{Parts: []*genai.Part{{Text: text}}}}
 		dim := int32(768)
-
 		res, err := a.client.Models.EmbedContent(ctx, a.modelName, contents, &genai.EmbedContentConfig{
 			TaskType:             taskType,
 			OutputDimensionality: &dim,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("gemini embedding failed: %w", err)
+			return nil, err
 		}
-
 		if len(res.Embeddings) == 0 {
-			return nil, fmt.Errorf("gemini returned no embeddings")
+			return nil, fmt.Errorf("no embeddings returned")
 		}
-
 		values := res.Embeddings[0].Values
 		normalize(values)
 		return values, nil
@@ -137,12 +149,13 @@ func normalize(v []float32) {
 	}
 }
 
+// --- Handlers ---
+
 func (a *App) rememberHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args, ok := request.Params.Arguments.(map[string]any)
 	if !ok {
 		return mcp.NewToolResultError("Invalid args"), nil
 	}
-
 	id, _ := args["id"].(string)
 	content, _ := args["content"].(string)
 	meta, _ := args["metadata"].(string)
@@ -152,11 +165,9 @@ func (a *App) rememberHandler(ctx context.Context, request mcp.CallToolRequest) 
 		Content:  content,
 		Metadata: map[string]string{"extra": meta},
 	}}, 1)
-
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Embedding failed: %v", err)), nil
 	}
-
 	_ = a.db.ExportToFile(a.dbPath, true, "")
 	return mcp.NewToolResultText(fmt.Sprintf("Memory '%s' saved.", id)), nil
 }
@@ -166,68 +177,111 @@ func (a *App) searchHandler(ctx context.Context, request mcp.CallToolRequest) (*
 	if !ok {
 		return mcp.NewToolResultError("Invalid args"), nil
 	}
-
 	query, _ := args["query"].(string)
-
-	// FIX: Use the .Count() method to see how many documents exist
 	totalDocs := a.collection.Count()
 	if totalDocs == 0 {
-		return mcp.NewToolResultText("No relevant memories found (Your memory is currently empty)."), nil
+		return mcp.NewToolResultText("Brain is empty."), nil
 	}
-
-	// We can't ask for more documents than we have
-	nResults := 3
+	nResults := 5
 	if totalDocs < nResults {
 		nResults = totalDocs
 	}
-
 	results, err := a.collection.Query(ctx, "QUERY_TASK:"+query, nResults, nil, nil)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Search failed: %v", err)), nil
 	}
-
 	var sb strings.Builder
-	sb.WriteString("Found relevant memories:\n\n")
+	sb.WriteString("Relevant memories:\n\n")
 	for _, res := range results {
-		sb.WriteString(fmt.Sprintf("[%s] (Score: %.2f)\n%s\n---\n", res.ID, 1-res.Similarity, res.Content))
+		sb.WriteString(fmt.Sprintf("[%s] (Sim: %.2f)\n%s\n---\n", res.ID, 1-res.Similarity, res.Content))
 	}
 	return mcp.NewToolResultText(sb.String()), nil
 }
 
+func (a *App) deleteHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args, _ := request.Params.Arguments.(map[string]any)
+	id, _ := args["id"].(string)
+
+	// FIX: Passing id as a single string instead of []string{id}
+	err := a.collection.Delete(ctx, nil, nil, id)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Delete failed: %v", err)), nil
+	}
+	_ = a.db.ExportToFile(a.dbPath, true, "")
+	return mcp.NewToolResultText(fmt.Sprintf("Memory '%s' deleted.", id)), nil
+}
+
+func (a *App) listHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	count := a.collection.Count()
+	if count == 0 {
+		return mcp.NewToolResultText("No memories stored."), nil
+	}
+
+	results, err := a.collection.Query(ctx, " ", count, nil, nil)
+	if err != nil {
+		return mcp.NewToolResultError("Could not retrieve memory list"), nil
+	}
+	
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Brain contains %d memories:\n", count))
+	for _, res := range results {
+		snippet := res.Content
+		if len(snippet) > 50 {
+			snippet = snippet[:47] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("- %s: %s\n", res.ID, snippet))
+	}
+	return mcp.NewToolResultText(sb.String()), nil
+}
+
+func (a *App) wipeHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	a.db.DeleteCollection("brain_memory")
+	embFunc := a.makeGeminiEmbedder()
+	col, _ := a.db.GetOrCreateCollection("brain_memory", nil, embFunc)
+	a.collection = col
+	os.Remove(a.dbPath)
+	return mcp.NewToolResultText("Brain completely wiped and reset."), nil
+}
+
+// --- Interactive CLI ---
+
 func (a *App) runInteractiveCLI(ctx context.Context) {
 	fmt.Println("=== BrainMCP Test Mode ===")
+	fmt.Println("Commands: remember <id> <msg> | search <q> | delete <id> | list | wipe | exit")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("\nbrain> ")
-		if !scanner.Scan() {
-			break
-		}
+		if !scanner.Scan() { break }
 		line := scanner.Text()
-		parts := strings.SplitN(line, " ", 3)
-		if len(parts) < 1 {
-			continue
-		}
+		parts := strings.Fields(line)
+		if len(parts) == 0 { continue }
 
-		switch strings.ToLower(parts[0]) {
-		case "exit":
-			return
+		cmd := strings.ToLower(parts[0])
+		switch cmd {
+		case "exit": return
+		case "list":
+			res, _ := a.listHandler(ctx, mcp.CallToolRequest{})
+			fmt.Println(res.Content[0].(mcp.TextContent).Text)
+		case "wipe":
+			res, _ := a.wipeHandler(ctx, mcp.CallToolRequest{})
+			fmt.Println(res.Content[0].(mcp.TextContent).Text)
 		case "remember":
-			if len(parts) < 3 {
-				fmt.Println("Usage: remember <id> <content>")
-				continue
-			}
+			if len(parts) < 3 { continue }
 			req := mcp.CallToolRequest{}
-			req.Params.Arguments = map[string]any{"id": parts[1], "content": parts[2]}
+			req.Params.Arguments = map[string]any{"id": parts[1], "content": strings.Join(parts[2:], " ")}
 			res, _ := a.rememberHandler(ctx, req)
 			fmt.Println(res.Content[0].(mcp.TextContent).Text)
 		case "search":
-			if len(parts) < 2 {
-				fmt.Println("Usage: search <query>")
-				continue
-			}
+			if len(parts) < 2 { continue }
 			req := mcp.CallToolRequest{}
-			req.Params.Arguments = map[string]any{"query": strings.TrimPrefix(line, parts[0]+" ")}
+			req.Params.Arguments = map[string]any{"query": strings.Join(parts[1:], " ")}
 			res, _ := a.searchHandler(ctx, req)
+			fmt.Println(res.Content[0].(mcp.TextContent).Text)
+		case "delete":
+			if len(parts) < 2 { continue }
+			req := mcp.CallToolRequest{}
+			req.Params.Arguments = map[string]any{"id": parts[1]}
+			res, _ := a.deleteHandler(ctx, req)
 			fmt.Println(res.Content[0].(mcp.TextContent).Text)
 		}
 	}
