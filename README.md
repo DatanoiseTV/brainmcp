@@ -1,52 +1,123 @@
 # BrainMCP
 
-BrainMCP is a Model Context Protocol (MCP) server that provides semantic long-term memory for LLMs. It allows AI models to store information with vector embeddings and retrieve relevant context later using natural language search.
+BrainMCP is a Model Context Protocol (MCP) server that provides semantic long-term memory for LLMs. It allows AI systems to store information with vector embeddings and retrieve relevant context using natural language search.
 
-It uses the Google Gemini GenAI SDK for high-quality embeddings and chromem-go for a lightweight, local vector database.
+Uses the Google Gemini GenAI SDK for high-quality embeddings and chromem-go for a lightweight, local vector database.
 
 ## Features
 
-- Semantic Search: Retrieve memories based on conceptual meaning rather than keyword matching.
-- Optimized Embeddings: Uses the gemini-embedding-001 model with Matryoshka Representation Learning (MRL) optimized at 768 dimensions.
-- Persistence: Automatically saves and loads your memory state from a local binary file.
-- Task-Specific Optimization: Uses RETRIEVAL_DOCUMENT for storage and RETRIEVAL_QUERY for searching to maximize accuracy.
-- Interactive Test Mode: A built-in CLI to verify embeddings and search results without an MCP client.
+- **Semantic Search**: Retrieve memories based on conceptual meaning rather than keyword matching
+- **Optimized Embeddings**: Uses gemini-embedding-001 with Matryoshka Representation Learning (MRL) optimized at 768 dimensions
+- **Persistence**: Automatically saves and loads memory state from a local binary file
+- **Task-Specific Optimization**: Uses RETRIEVAL_DOCUMENT for storage and RETRIEVAL_QUERY for searching to maximize accuracy
+- **LLM-Assisted Synthesis**: Ask questions and receive conversational answers synthesized from stored memories
+- **Interactive Test Mode**: Built-in CLI for testing without requiring an MCP client
+- **Modular Architecture**: Clean separation of concerns across multiple Go files
+
+## Project Structure
+
+- `main.go` - Application entry point and server initialization
+- `constants.go` - Configuration and message constants
+- `embedder.go` - Gemini embedding functions and vector normalization
+- `handlers.go` - MCP tool handlers for all operations
+- `cli.go` - Interactive test mode CLI
+- `Makefile` - Build and development tasks
 
 ## Prerequisites
 
-- Go 1.22 or higher.
-- A Google Gemini API Key.
+- Go 1.25.1 or higher
+- Google Gemini API Key
 
 ## Installation
 
 ```bash
 git clone https://github.com/DatanoiseTV/brainmcp
 cd brainmcp
-go build -o brainmcp main.go
+make build
 ```
 
 ## Configuration
 
-The server requires a Gemini API key. Set it as an environment variable:
+Set the Gemini API key as an environment variable:
 
 ```bash
 export GEMINI_API_KEY="your-api-key-here"
 ```
 
+Optional flags:
+- `-model`: Embedding model (default: gemini-embedding-001)
+- `-llm`: LLM model for synthesis (default: gemini-flash-lite-latest)
+- `-t`: Run in interactive test mode
+
 ## Usage
 
 ### Interactive Test Mode
 
-You can run the server in a local terminal to test its memory capabilities manually:
+Test the memory system locally:
 
 ```bash
-./brainmcp -t
+make test
 ```
 
-Commands in test mode:
-- remember [id] [content]: Store a new memory.
-- search [query]: Search through stored memories.
-- exit: Close the application.
+Available commands:
+- `remember <id> <content>` - Store a new memory
+- `search <query>` - Search through stored memories
+- `ask <question>` - Ask a question and get conversational answers
+- `list` - Show all stored memories
+- `delete <id>` - Remove a specific memory
+- `wipe` - Clear all memories
+- `exit` - Close the application
+
+### MCP Server Mode
+
+Run as an MCP server:
+
+```bash
+make run
+```
+
+The server listens on stdio and provides these tools:
+- **remember** - Store memories with semantic vectors
+- **search_memory** - Semantic search through memories
+- **ask_brain** - LLM-assisted question answering
+- **list_memories** - List all stored memories
+- **delete_memory** - Remove memories
+- **wipe_all_memories** - Clear entire memory database
+
+## Development
+
+Build the project:
+```bash
+make build
+```
+
+Format code:
+```bash
+make format
+```
+
+Run linter:
+```bash
+make lint
+```
+
+Clean build artifacts:
+```bash
+make clean
+```
+
+## Implementation Details
+
+The system uses a dual-task embedding strategy:
+- Documents are embedded with RETRIEVAL_DOCUMENT task type
+- Queries are embedded with RETRIEVAL_QUERY task type
+
+This task-specific optimization ensures that searches find semantically relevant results even when query wording differs significantly from stored content.
+
+## Version
+
+1.3.0 - Modular refactor with improved error handling and documentation
+
 
 ### MCP Mode (Standard)
 
