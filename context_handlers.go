@@ -181,10 +181,53 @@ func (a *App) addTagHandler(ctx context.Context, request mcp.CallToolRequest) (*
 		}
 	}
 
-	// Note: Tag is added to memory metadata in chromem-go
-	// This is a conceptual handler - actual storage happens in chromem collection metadata
-	if err := a.ctx.IncrementTagCount(tag); err != nil {
-		a.logger.Printf("Warning: Failed to increment tag count: %v", err)
+	// Retrieve the existing memory to update its metadata
+	memory, err := a.collection.GetByID(ctx, memoryID)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Memory not found: %v", err)), nil
+	}
+
+	// Update the tags field in metadata (comma-separated)
+	if memory.Metadata == nil {
+		memory.Metadata = make(map[string]string)
+	}
+
+	currentTags := memory.Metadata["tags"]
+	var tags []string
+	if currentTags != "" {
+		tags = strings.Split(currentTags, ",")
+	}
+
+	// Check if tag already exists
+	tagExists := false
+	for _, t := range tags {
+		if strings.TrimSpace(t) == tag {
+			tagExists = true
+			break
+		}
+	}
+
+	if !tagExists {
+		tags = append(tags, tag)
+		memory.Metadata["tags"] = strings.Join(tags, ",")
+
+		// Delete the old memory and re-add with updated metadata
+		if err := a.collection.Delete(ctx, nil, nil, memoryID); err != nil {
+			a.logger.Printf("Warning: Failed to delete old memory during tag update: %v", err)
+		}
+
+		if err := a.collection.AddDocument(ctx, memory); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Failed to update memory with tag: %v", err)), nil
+		}
+
+		// Persist the updated database
+		if err := a.db.ExportToFile(a.dbPath, true, ""); err != nil {
+			a.logger.Printf("Warning: Failed to persist memory update to disk: %v", err)
+		}
+
+		if err := a.ctx.IncrementTagCount(tag); err != nil {
+			a.logger.Printf("Warning: Failed to increment tag count: %v", err)
+		}
 	}
 
 	if err := a.ctx.Save(); err != nil {
