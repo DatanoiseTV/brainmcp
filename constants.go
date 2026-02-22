@@ -41,15 +41,27 @@ const (
 	// MCP server name
 	ServerName = "brain-mcp"
 	// Server version following semantic versioning
-	ServerVersion = "1.3.0"
+	ServerVersion = "1.4.0"
+)
+
+// Context and tagging constants
+const (
+	// Default context for memories without explicit context
+	DefaultContextID = "general"
+	// Default context name
+	DefaultContextName = "General"
+	// Context state persistence file
+	ContextsDataPath = "brain_contexts.json"
+	// Maximum number of concurrent client sessions
+	MaxConcurrentClients = 100
 )
 
 // UI/CLI messages
 const (
 	PrompStr = "brain> "
 	WelcomeMsg = "=== BrainMCP Test Mode ==="
-	HelpMsg = "Commands: remember <id> <msg> | search <q> | ask <q> | delete <id> | list | wipe | exit"
-	UnknownCmdMsg = "Unknown command. Try: remember, search, ask, delete, list, wipe, exit"
+	HelpMsg = "Commands: remember <id> <msg> | search <q> | ask <q> | delete <id> | list | tag <id> <tag> | context <create|switch|list> | wipe | exit"
+	UnknownCmdMsg = "Unknown command. Try: remember, search, ask, delete, list, tag, context, wipe, exit"
 )
 
 // Error and status messages

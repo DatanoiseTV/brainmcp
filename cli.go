@@ -32,6 +32,7 @@ func (a *App) runInteractiveCLI(ctx context.Context) {
 		cmd := strings.ToLower(parts[0])
 		switch cmd {
 		case "exit":
+			a.gracefulShutdown()
 			return
 
 		case "list":
@@ -67,6 +68,44 @@ func (a *App) runInteractiveCLI(ctx context.Context) {
 				continue
 			}
 			a.cliDelete(ctx, parts[1])
+
+		case "tag":
+			if len(parts) < 3 {
+				fmt.Println("Usage: tag <memory_id> <tag>")
+				continue
+			}
+			a.cliAddTag(ctx, parts[1], parts[2])
+
+		case "tags":
+			a.cliListTags(ctx)
+
+		case "context":
+			if len(parts) < 2 {
+				fmt.Println("Usage: context <list|create|switch>")
+				continue
+			}
+			subCmd := strings.ToLower(parts[1])
+			switch subCmd {
+			case "list":
+				a.cliListContexts(ctx)
+			case "create":
+				if len(parts) < 4 {
+					fmt.Println("Usage: context create <id> <name>")
+					continue
+				}
+				a.cliCreateContext(ctx, parts[2], parts[3])
+			case "switch":
+				if len(parts) < 3 {
+					fmt.Println("Usage: context switch <id>")
+					continue
+				}
+				a.cliSwitchContext(ctx, parts[2])
+			default:
+				fmt.Println("Unknown context command. Try: context list|create|switch")
+			}
+
+		case "save":
+			a.cliSaveToDisk(ctx)
 
 		default:
 			fmt.Println(UnknownCmdMsg)
@@ -123,5 +162,50 @@ func (a *App) cliList(ctx context.Context) {
 func (a *App) cliWipe(ctx context.Context) {
 	req := mcp.CallToolRequest{}
 	res, _ := a.wipeHandler(ctx, req)
+	fmt.Println(res.Content[0].(mcp.TextContent).Text)
+}
+
+// cliAddTag adds a tag to a memory from CLI.
+func (a *App) cliAddTag(ctx context.Context, memoryID, tag string) {
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"memory_id": memoryID, "tag": tag}
+	res, _ := a.addTagHandler(ctx, req)
+	fmt.Println(res.Content[0].(mcp.TextContent).Text)
+}
+
+// cliListTags lists all tags from CLI.
+func (a *App) cliListTags(ctx context.Context) {
+	req := mcp.CallToolRequest{}
+	res, _ := a.listTagsHandler(ctx, req)
+	fmt.Println(res.Content[0].(mcp.TextContent).Text)
+}
+
+// cliListContexts lists all contexts from CLI.
+func (a *App) cliListContexts(ctx context.Context) {
+	req := mcp.CallToolRequest{}
+	res, _ := a.listContextsHandler(ctx, req)
+	fmt.Println(res.Content[0].(mcp.TextContent).Text)
+}
+
+// cliCreateContext creates a new context from CLI.
+func (a *App) cliCreateContext(ctx context.Context, id, name string) {
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"id": id, "name": name, "description": ""}
+	res, _ := a.createContextHandler(ctx, req)
+	fmt.Println(res.Content[0].(mcp.TextContent).Text)
+}
+
+// cliSwitchContext switches to a different context from CLI.
+func (a *App) cliSwitchContext(ctx context.Context, contextID string) {
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"context_id": contextID, "client_id": ""}
+	res, _ := a.switchContextHandler(ctx, req)
+	fmt.Println(res.Content[0].(mcp.TextContent).Text)
+}
+
+// cliSaveToDisk saves the database and context state from CLI.
+func (a *App) cliSaveToDisk(ctx context.Context) {
+	req := mcp.CallToolRequest{}
+	res, _ := a.saveToDiskHandler(ctx, req)
 	fmt.Println(res.Content[0].(mcp.TextContent).Text)
 }
