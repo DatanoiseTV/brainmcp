@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -40,13 +41,33 @@ func main() {
 
 	ctx := context.Background()
 
-	// Initialize logger
-	logger := log.New(os.Stderr, "[BrainMCP] ", log.LstdFlags|log.Lshortfile)
+	// Initialize logger - output to stderr in test mode, file in MCP mode
+	var logger *log.Logger
+	if *testMode {
+		logger = log.New(os.Stderr, "[BrainMCP] ", log.LstdFlags|log.Lshortfile)
+	} else {
+		// In MCP mode, log to file instead of stderr (to avoid corrupting MCP protocol)
+		logFile, err := os.OpenFile(
+			filepath.Join(os.TempDir(), "brainmcp.log"),
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+			0644,
+		)
+		if err != nil {
+			// If we can't open log file, fail silently (don't write to stderr in MCP mode)
+			logger = log.New(io.Discard, "", 0)
+		} else {
+			logger = log.New(logFile, "[BrainMCP] ", log.LstdFlags|log.Lshortfile)
+		}
+	}
 
 	// Validate Gemini API key
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	if geminiKey == "" {
-		logger.Fatal("GEMINI_API_KEY environment variable is required")
+		if *testMode {
+			logger.Fatal("GEMINI_API_KEY environment variable is required")
+		}
+		// In MCP mode, exit silently
+		os.Exit(1)
 	}
 
 	// Initialize Gemini client
@@ -54,7 +75,8 @@ func main() {
 		APIKey: geminiKey,
 	})
 	if err != nil {
-		logger.Fatalf("Failed to create GenAI client: %v", err)
+		logger.Printf("Failed to create GenAI client: %v", err)
+		os.Exit(1)
 	}
 
 	// Initialize vector database
@@ -75,9 +97,11 @@ func main() {
 	app.ctx = contextMgr
 
 	// Initialize version manager with BadgerDB backend for versioning
-	versionMgr, err := NewMemoryVersionManager(filepath.Join(filepath.Dir(app.dbPath), "memory_versions"))
+	versionDir := filepath.Join(filepath.Dir(app.dbPath), "memory_versions")
+	versionMgr, err := NewMemoryVersionManager(versionDir)
 	if err != nil {
-		logger.Fatalf("Failed to initialize version manager: %v", err)
+		logger.Printf("Failed to initialize version manager: %v", err)
+		os.Exit(1)
 	}
 	app.versionMgr = versionMgr
 
@@ -103,7 +127,8 @@ func main() {
 	// Initialize or retrieve collection (after loading from disk)
 	col, err := db.GetOrCreateCollection(CollectionName, nil, embFunc)
 	if err != nil {
-		logger.Fatalf("Failed to create collection: %v", err)
+		logger.Printf("Failed to create collection: %v", err)
+		os.Exit(1)
 	}
 	app.collection = col
 
@@ -212,7 +237,8 @@ func main() {
 	}()
 
 	if err := server.ServeStdio(s); err != nil {
-		logger.Fatalf("Server error: %v", err)
+		logger.Printf("Server error: %v", err)
+		os.Exit(1)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/dgraph-io/badger/v4"
@@ -21,6 +22,11 @@ type MemoryVersionManager struct {
 
 // NewMemoryVersionManager creates a new version manager with BadgerDB backend.
 func NewMemoryVersionManager(dirPath string) (*MemoryVersionManager, error) {
+	// Ensure directory exists
+	if err := os.MkdirAll(dirPath, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create version directory: %w", err)
+	}
+
 	opts := badger.DefaultOptions(dirPath).
 		WithLoggingLevel(badger.ERROR)
 
