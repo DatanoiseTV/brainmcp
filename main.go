@@ -74,23 +74,25 @@ func main() {
 	// Create embedding function
 	embFunc := app.makeGeminiEmbedder()
 
-	// Initialize or retrieve collection
+	// Load persisted memories from disk if they exist (BEFORE creating collection)
+	if info, err := os.Stat(app.dbPath); err == nil && info.Size() > 0 {
+		if err := db.ImportFromFile(app.dbPath, ""); err != nil {
+			if *testMode {
+				fmt.Printf("Note: Starting fresh (DB import failed: %v)\n", err)
+			} else {
+				logger.Printf("Warning: Failed to load persisted memories: %v", err)
+			}
+		} else {
+			logger.Println("Loaded persisted memories from disk")
+		}
+	}
+
+	// Initialize or retrieve collection (after loading from disk)
 	col, err := db.GetOrCreateCollection(CollectionName, nil, embFunc)
 	if err != nil {
 		logger.Fatalf("Failed to create collection: %v", err)
 	}
 	app.collection = col
-
-	// Load persisted memories if they exist
-	if info, err := os.Stat(app.dbPath); err == nil && info.Size() > 0 {
-		if err := db.ImportFromFile(app.dbPath, ""); err != nil {
-			if *testMode {
-				fmt.Printf("Note: Started fresh (DB import failed: %v)\n", err)
-			} else {
-				logger.Printf("Warning: Failed to load persisted memories: %v", err)
-			}
-		}
-	}
 
 	// Run in appropriate mode
 	if *testMode {
