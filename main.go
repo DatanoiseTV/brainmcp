@@ -23,11 +23,13 @@ type App struct {
 	dbPath     string
 	testMode   bool
 	modelName  string
+	llmModel   string
 }
 
 func main() {
 	testMode := flag.Bool("t", false, "Run in interactive CLI test mode")
 	modelFlag := flag.String("model", "gemini-embedding-001", "Gemini embedding model")
+	llmFlag := flag.String("llm", "gemini-flash-lite-latest", "Gemini model for assisted search")
 	flag.Parse()
 
 	ctx := context.Background()
@@ -52,6 +54,7 @@ func main() {
 		dbPath:    dbPath,
 		testMode:  *testMode,
 		modelName: *modelFlag,
+		llmModel:  *llmFlag,
 	}
 
 	embFunc := app.makeGeminiEmbedder()
@@ -73,7 +76,7 @@ func main() {
 		return
 	}
 
-	s := server.NewMCPServer("brain-mcp", "1.1.0")
+	s := server.NewMCPServer("brain-mcp", "1.2.0")
 
 	// --- Tool Registration ---
 
@@ -85,9 +88,14 @@ func main() {
 	), app.rememberHandler)
 
 	s.AddTool(mcp.NewTool("search_memory",
-		mcp.WithDescription("Search memory using semantic similarity."),
+		mcp.WithDescription("Search memory using semantic similarity. Returns raw snippets."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Natural language search query")),
 	), app.searchHandler)
+
+	s.AddTool(mcp.NewTool("ask_brain",
+		mcp.WithDescription("LLM-assisted search. Processes your question, searches memory, and provides a conversational answer based on found facts."),
+		mcp.WithString("question", mcp.Required(), mcp.Description("The question you want to ask your memory")),
+	), app.askBrainHandler)
 
 	s.AddTool(mcp.NewTool("delete_memory",
 		mcp.WithDescription("Removes a specific memory from the brain by its ID."),
@@ -151,6 +159,51 @@ func normalize(v []float32) {
 
 // --- Handlers ---
 
+func (a *App) askBrainHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args, _ := request.Params.Arguments.(map[string]any)
+	question, _ := args["question"].(string)
+
+	count := a.collection.Count()
+	if count == 0 {
+		return mcp.NewToolResultText("I don't have any memories yet to answer that."), nil
+	}
+	nResults := 5
+	if count < nResults {
+		nResults = count
+	}
+
+	// Use the prefix to trigger RETRIEVAL_QUERY for better accuracy
+	results, err := a.collection.Query(ctx, "QUERY_TASK:"+question, nResults, nil, nil)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Retrieval failed: %v", err)), nil
+	}
+
+	var contextBuilder strings.Builder
+	for _, res := range results {
+		contextBuilder.WriteString(fmt.Sprintf("- Memory [%s]: %s\n", res.ID, res.Content))
+	}
+
+	prompt := fmt.Sprintf(`You are a personal memory assistant. Based ONLY on the retrieved memories provided below, answer the user's question. 
+If the answer is not contained within the memories, politely state that you don't recall that information.
+
+Retrieved Memories:
+%s
+
+User Question: %s`, contextBuilder.String(), question)
+
+	resp, err := a.client.Models.GenerateContent(ctx, a.llmModel, genai.Text(prompt), nil)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("LLM synthesis failed: %v", err)), nil
+	}
+
+	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
+		return mcp.NewToolResultText("Gemini was unable to generate an answer (check safety filters)."), nil
+	}
+
+	answer := resp.Candidates[0].Content.Parts[0].Text
+	return mcp.NewToolResultText(answer), nil
+}
+
 func (a *App) rememberHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args, ok := request.Params.Arguments.(map[string]any)
 	if !ok {
@@ -202,7 +255,6 @@ func (a *App) deleteHandler(ctx context.Context, request mcp.CallToolRequest) (*
 	args, _ := request.Params.Arguments.(map[string]any)
 	id, _ := args["id"].(string)
 
-	// FIX: Passing id as a single string instead of []string{id}
 	err := a.collection.Delete(ctx, nil, nil, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Delete failed: %v", err)), nil
@@ -247,7 +299,8 @@ func (a *App) wipeHandler(ctx context.Context, request mcp.CallToolRequest) (*mc
 
 func (a *App) runInteractiveCLI(ctx context.Context) {
 	fmt.Println("=== BrainMCP Test Mode ===")
-	fmt.Println("Commands: remember <id> <msg> | search <q> | delete <id> | list | wipe | exit")
+	// UPDATED: Added 'ask' to help string
+	fmt.Println("Commands: remember <id> <msg> | search <q> | ask <q> | delete <id> | list | wipe | exit")
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("\nbrain> ")
@@ -265,24 +318,50 @@ func (a *App) runInteractiveCLI(ctx context.Context) {
 		case "wipe":
 			res, _ := a.wipeHandler(ctx, mcp.CallToolRequest{})
 			fmt.Println(res.Content[0].(mcp.TextContent).Text)
+		case "ask":
+			if len(parts) < 2 { 
+				fmt.Println("Usage: ask <question>")
+				continue 
+			}
+			req := mcp.CallToolRequest{}
+			req.Params.Arguments = map[string]any{"question": strings.Join(parts[1:], " ")}
+			res, err := a.askBrainHandler(ctx, req)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+			} else if res.IsError {
+				fmt.Printf("Tool Error: %v\n", res.Content[0].(mcp.TextContent).Text)
+			} else {
+				fmt.Println(res.Content[0].(mcp.TextContent).Text)
+			}
 		case "remember":
-			if len(parts) < 3 { continue }
+			if len(parts) < 3 { 
+				fmt.Println("Usage: remember <id> <content>")
+				continue 
+			}
 			req := mcp.CallToolRequest{}
 			req.Params.Arguments = map[string]any{"id": parts[1], "content": strings.Join(parts[2:], " ")}
 			res, _ := a.rememberHandler(ctx, req)
 			fmt.Println(res.Content[0].(mcp.TextContent).Text)
 		case "search":
-			if len(parts) < 2 { continue }
+			if len(parts) < 2 { 
+				fmt.Println("Usage: search <query>")
+				continue 
+			}
 			req := mcp.CallToolRequest{}
 			req.Params.Arguments = map[string]any{"query": strings.Join(parts[1:], " ")}
 			res, _ := a.searchHandler(ctx, req)
 			fmt.Println(res.Content[0].(mcp.TextContent).Text)
 		case "delete":
-			if len(parts) < 2 { continue }
+			if len(parts) < 2 { 
+				fmt.Println("Usage: delete <id>")
+				continue 
+			}
 			req := mcp.CallToolRequest{}
 			req.Params.Arguments = map[string]any{"id": parts[1]}
 			res, _ := a.deleteHandler(ctx, req)
 			fmt.Println(res.Content[0].(mcp.TextContent).Text)
+		default:
+			fmt.Println("Unknown command. Try: remember, search, ask, delete, list, wipe, exit")
 		}
 	}
 }
