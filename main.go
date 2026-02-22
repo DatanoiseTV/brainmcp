@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -23,6 +25,8 @@ type App struct {
 	modelName  string
 	llmModel   string
 	logger     *log.Logger
+	ctx        *ContextManager
+	clientID   string // Default client ID for server operations
 }
 
 func main() {
@@ -60,7 +64,12 @@ func main() {
 		modelName: *modelFlag,
 		llmModel:  *llmFlag,
 		logger:    logger,
+		clientID:  "server",
 	}
+
+	// Initialize context manager for persistent contexts and tagging
+	contextMgr := NewContextManager(ContextsDataPath)
+	app.ctx = contextMgr
 
 	// Create embedding function
 	embFunc := app.makeGeminiEmbedder()
@@ -123,9 +132,93 @@ func main() {
 		mcp.WithDescription("Completely clears the brain. Use with caution."),
 	), app.wipeHandler)
 
+	// Context management tools
+	s.AddTool(mcp.NewTool("create_context",
+		mcp.WithDescription("Create a new named context to organize memories by topic or project."),
+		mcp.WithString("id", mcp.Required(), mcp.Description("Unique context identifier")),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Human-readable context name")),
+		mcp.WithString("description", mcp.Description("Optional description of the context")),
+	), app.createContextHandler)
+
+	s.AddTool(mcp.NewTool("list_contexts",
+		mcp.WithDescription("List all named contexts in the brain."),
+	), app.listContextsHandler)
+
+	s.AddTool(mcp.NewTool("switch_context",
+		mcp.WithDescription("Switch to a different context for organizing memories."),
+		mcp.WithString("context_id", mcp.Required(), mcp.Description("The context ID to switch to")),
+		mcp.WithString("client_id", mcp.Description("Optional client ID (uses server default if not provided)")),
+	), app.switchContextHandler)
+
+	s.AddTool(mcp.NewTool("share_context",
+		mcp.WithDescription("Share a context with another client to enable collaboration."),
+		mcp.WithString("context_id", mcp.Required(), mcp.Description("Context to share")),
+		mcp.WithString("target_client_id", mcp.Required(), mcp.Description("Client ID to share with")),
+	), app.shareContextHandler)
+
+	// Tag management tools
+	s.AddTool(mcp.NewTool("add_tag",
+		mcp.WithDescription("Add a tag to a memory for categorization."),
+		mcp.WithString("memory_id", mcp.Required(), mcp.Description("ID of the memory to tag")),
+		mcp.WithString("tag", mcp.Required(), mcp.Description("Tag to add")),
+	), app.addTagHandler)
+
+	s.AddTool(mcp.NewTool("create_tag",
+		mcp.WithDescription("Create a new tag definition for categorization."),
+		mcp.WithString("name", mcp.Required(), mcp.Description("Tag name")),
+		mcp.WithString("description", mcp.Description("Optional description")),
+		mcp.WithString("color", mcp.Description("Optional hex color for UI")),
+	), app.createTagHandler)
+
+	s.AddTool(mcp.NewTool("list_tags",
+		mcp.WithDescription("List all available tags."),
+	), app.listTagsHandler)
+
+	s.AddTool(mcp.NewTool("search_by_tag",
+		mcp.WithDescription("Search memories by tag."),
+		mcp.WithString("tag", mcp.Required(), mcp.Description("Tag to search for")),
+	), app.searchByTagHandler)
+
+	s.AddTool(mcp.NewTool("save_to_disk",
+		mcp.WithDescription("Explicitly persist the database and context state to disk."),
+	), app.saveToDiskHandler)
+
+	// Setup graceful shutdown on signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
 	// Start server
 	logger.Printf("BrainMCP Server starting (version %s) on Stdio...", ServerVersion)
+	go func() {
+		sig := <-sigChan
+		logger.Printf("Received signal %v, gracefully shutting down...", sig)
+		app.gracefulShutdown()
+		os.Exit(0)
+	}()
+
 	if err := server.ServeStdio(s); err != nil {
 		logger.Fatalf("Server error: %v", err)
 	}
+}
+
+// gracefulShutdown performs cleanup operations before server exit.
+// It saves the database and context state to disk.
+func (a *App) gracefulShutdown() {
+	a.logger.Println("Saving database to disk...")
+
+	// Save vector database
+	if err := a.db.ExportToFile(a.dbPath, true, ""); err != nil {
+		a.logger.Printf("Error saving vector database: %v", err)
+	} else {
+		a.logger.Println("Vector database saved successfully")
+	}
+
+	// Save context state
+	if err := a.ctx.Save(); err != nil {
+		a.logger.Printf("Error saving context state: %v", err)
+	} else {
+		a.logger.Println("Context state saved successfully")
+	}
+
+	a.logger.Println("Shutdown complete")
 }
