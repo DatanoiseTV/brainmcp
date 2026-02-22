@@ -1,5 +1,107 @@
 # BrainMCP TODO & Backlog
 
+## Session 3 - Advanced Features (2026-02-22)
+
+### Completed ✓
+- [x] Create advanced_types.go with type definitions for versioning, export/import, filtering, batch ops
+- [x] Create version_manager.go with MemoryVersionManager implementation
+- [x] Create search_filters.go with SearchFilterEngine for advanced filtering
+- [x] Create advanced_handlers.go with MCP tool handler stubs
+- [x] Fix compilation issues (imports, unused variables)
+- [x] Successfully build with all advanced feature modules
+- [x] Commit: e2e4dc1 - Add advanced features: versioning, filtering, export/import, batch ops
+
+### Implementation Details
+
+#### Files Created
+
+**advanced_types.go** (90 lines)
+- MemoryVersion: Track individual versions with timestamp and author
+- MemoryWithHistory: Container for versioned memory with metadata
+- ExportData: Structured format for export/import with contexts and tags
+- BatchMemoryData: Input format for batch memory creation
+- BatchOperationResult: Result tracking for batch operations
+- SearchFilter: Advanced search criteria with date ranges, tags, context
+- SearchResult: Formatted search result with similarity and metadata
+
+**version_manager.go** (280 lines)
+- MemoryVersionManager: Manages version history for all memories
+- Methods:
+  - AddVersion(): Track new version with change notes
+  - GetVersion(id, number): Retrieve specific version
+  - GetHistory(id): Get all versions for a memory
+  - ExportMemories(): JSON export with metadata
+  - ImportMemories(): JSON import with merge strategies
+  - BatchCreateMemories(): Bulk create with context
+  - BatchDeleteMemories(): Bulk delete with tracking
+  - BatchAddTags()/BatchRemoveTags(): Bulk tag operations
+
+**search_filters.go** (220 lines)
+- SearchFilterEngine: Advanced search with multiple filter types
+- Filtering by:
+  - Context ID
+  - Tag combinations (AND/OR logic)
+  - Date ranges (created, updated)
+  - Client/creator ID
+  - Result limits
+- Methods:
+  - FilterMemories(): Apply complex filters
+  - SearchByContext(): Context-specific search
+  - SearchByDateRange(): Temporal search
+  - GetMemoriesByTag()/GetMemoriesByMultipleTags()
+  - GetContextStats(): Statistics for a context
+  - ValidateFilter(): Filter validation
+
+**advanced_handlers.go** (210 lines)
+- MCP tool handler stubs with correct signatures
+- Handlers (registered to be added to main.go):
+  - exportMemoriesHandler: Export memories with metadata
+  - importMemoriesHandler: Import from JSON
+  - getMemoryHistoryHandler: Retrieve version history
+  - restoreVersionHandler: Restore to previous version
+  - searchAdvancedHandler: Advanced filtering search
+  - batchOperationsHandler: Bulk operations (create/delete/tag)
+  - getContextStatsHandler: Context statistics
+
+### Architecture Overview
+
+```
+MemoryVersionManager
+├── histories: map[string]*MemoryWithHistory
+└── Methods for versioning, export, batch ops
+
+SearchFilterEngine
+├── versionMgr: *MemoryVersionManager
+├── ctxMgr: *ContextManager
+└── Methods for filtering, statistics
+
+Advanced Handlers (MCP Integration)
+├── export_memories: Save to JSON
+├── import_memories: Load from JSON
+├── get_memory_history: Retrieve versions
+├── restore_version: Time-travel to old version
+├── search_advanced: Complex filtering
+├── batch_operations: Bulk CRUD
+└── get_context_stats: Analytics
+```
+
+### In Progress
+- [ ] Integrate MemoryVersionManager into App struct (main.go)
+- [ ] Register advanced handlers in main.go
+- [ ] Add version tracking to rememberHandler and other memory operations
+- [ ] Add advanced CLI commands for versioning and filtering
+- [ ] Test roundtrip: create → export → import → verify
+- [ ] Test version history and restore functionality
+- [ ] Test batch operations and search filters
+- [ ] Update version to v1.5.0
+
+### Pending
+- [ ] Performance testing with large datasets
+- [ ] Persistence of version history to disk
+- [ ] Advanced handler implementations with full logic
+- [ ] Comprehensive integration tests
+- [ ] Error handling improvements
+
 ## Session 2 - Context Management & Tagging (2026-02-22)
 
 ### Completed ✓

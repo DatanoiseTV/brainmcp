@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -17,16 +18,18 @@ import (
 
 // App encapsulates the BrainMCP server state and dependencies.
 type App struct {
-	db         *chromem.DB
-	collection *chromem.Collection
-	client     *genai.Client
-	dbPath     string
-	testMode   bool
-	modelName  string
-	llmModel   string
-	logger     *log.Logger
-	ctx        *ContextManager
-	clientID   string // Default client ID for server operations
+	db           *chromem.DB
+	collection   *chromem.Collection
+	client       *genai.Client
+	dbPath       string
+	testMode     bool
+	modelName    string
+	llmModel     string
+	logger       *log.Logger
+	ctx          *ContextManager
+	versionMgr   *MemoryVersionManager
+	filterEngine *SearchFilterEngine
+	clientID     string // Default client ID for server operations
 }
 
 func main() {
@@ -70,6 +73,16 @@ func main() {
 	// Initialize context manager for persistent contexts and tagging
 	contextMgr := NewContextManager(ContextsDataPath)
 	app.ctx = contextMgr
+
+	// Initialize version manager with BadgerDB backend for versioning
+	versionMgr, err := NewMemoryVersionManager(filepath.Join(filepath.Dir(app.dbPath), "memory_versions"))
+	if err != nil {
+		logger.Fatalf("Failed to initialize version manager: %v", err)
+	}
+	app.versionMgr = versionMgr
+
+	// Initialize search filter engine
+	app.filterEngine = NewSearchFilterEngine(versionMgr, contextMgr)
 
 	// Create embedding function
 	embFunc := app.makeGeminiEmbedder()
@@ -220,6 +233,15 @@ func (a *App) gracefulShutdown() {
 		a.logger.Printf("Error saving context state: %v", err)
 	} else {
 		a.logger.Println("Context state saved successfully")
+	}
+
+	// Close version manager (BadgerDB)
+	if a.versionMgr != nil {
+		if err := a.versionMgr.Close(); err != nil {
+			a.logger.Printf("Error closing version manager: %v", err)
+		} else {
+			a.logger.Println("Version manager closed successfully")
+		}
 	}
 
 	a.logger.Println("Shutdown complete")
