@@ -81,20 +81,43 @@ func (a *App) rememberHandler(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("Memory content cannot be empty"), nil
 	}
 
-	err := a.collection.AddDocuments(ctx, []chromem.Document{{
+	// Get client's current context
+	currentContext, err := a.ctx.GetClientContext(a.clientID)
+	if err != nil {
+		currentContext = DefaultContextID
+	}
+
+	// Create metadata with context info
+	metadata := map[string]string{
+		"extra":    meta,
+		"context":  currentContext,
+		"client":   a.clientID,
+	}
+
+	err = a.collection.AddDocuments(ctx, []chromem.Document{{
 		ID:       id,
 		Content:  content,
-		Metadata: map[string]string{"extra": meta},
+		Metadata: metadata,
 	}}, 1)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to store memory: %v", err)), nil
 	}
 
+	// Update context memory count
+	if err := a.ctx.IncrementMemoryCount(currentContext); err != nil {
+		a.logger.Printf("Warning: Failed to update context count: %v", err)
+	}
+
+	// Save both database and context state
 	if err := a.db.ExportToFile(a.dbPath, true, ""); err != nil {
 		a.logger.Printf("Warning: Failed to persist memory to disk: %v", err)
 	}
 
-	return mcp.NewToolResultText(fmt.Sprintf("Memory '%s' saved.", id)), nil
+	if err := a.ctx.Save(); err != nil {
+		a.logger.Printf("Warning: Failed to save context state: %v", err)
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Memory '%s' saved in context '%s'.", id, currentContext)), nil
 }
 
 // searchHandler handles the search_memory tool - semantic similarity search.
@@ -147,8 +170,21 @@ func (a *App) deleteHandler(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError(fmt.Sprintf("Delete failed: %v", err)), nil
 	}
 
+	// Update context memory count
+	currentContext, err := a.ctx.GetClientContext(a.clientID)
+	if err == nil {
+		if err := a.ctx.DecrementMemoryCount(currentContext); err != nil {
+			a.logger.Printf("Warning: Failed to update context count: %v", err)
+		}
+	}
+
+	// Save both database and context state
 	if err := a.db.ExportToFile(a.dbPath, true, ""); err != nil {
 		a.logger.Printf("Warning: Failed to persist deletion to disk: %v", err)
+	}
+
+	if err := a.ctx.Save(); err != nil {
+		a.logger.Printf("Warning: Failed to save context state: %v", err)
 	}
 
 	return mcp.NewToolResultText(fmt.Sprintf("Memory '%s' deleted.", id)), nil
@@ -189,9 +225,20 @@ func (a *App) wipeHandler(ctx context.Context, request mcp.CallToolRequest) (*mc
 	}
 	a.collection = col
 
+	// Reset context memory counts
+	contexts := a.ctx.ListContexts()
+	for _, c := range contexts {
+		c.MemoryCount = 0
+	}
+
 	// Remove persisted database file
 	if err := os.Remove(a.dbPath); err != nil && !os.IsNotExist(err) {
 		a.logger.Printf("Warning: Failed to remove database file: %v", err)
+	}
+
+	// Save reset state
+	if err := a.ctx.Save(); err != nil {
+		a.logger.Printf("Warning: Failed to save context state: %v", err)
 	}
 
 	return mcp.NewToolResultText(BrainWipedMsg), nil
