@@ -81,10 +81,17 @@ func main() {
 
 	// Initialize vector database
 	db := chromem.NewDB()
+	
+	// Determine data directory (use home directory for safety)
+	dataDir := filepath.Join(os.Getenv("HOME"), ".brainmcp")
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		logger.Printf("Warning: Failed to create data directory: %v", err)
+	}
+	
 	app := &App{
 		db:        db,
 		client:    client,
-		dbPath:    DefaultDBPath,
+		dbPath:    filepath.Join(dataDir, DefaultDBPath),
 		testMode:  *testMode,
 		modelName: *modelFlag,
 		llmModel:  *llmFlag,
@@ -93,11 +100,11 @@ func main() {
 	}
 
 	// Initialize context manager for persistent contexts and tagging
-	contextMgr := NewContextManager(ContextsDataPath)
+	contextMgr := NewContextManager(filepath.Join(dataDir, "brain_contexts.json"))
 	app.ctx = contextMgr
 
 	// Initialize version manager with BadgerDB backend for versioning
-	versionDir := filepath.Join(filepath.Dir(app.dbPath), "memory_versions")
+	versionDir := filepath.Join(dataDir, "memory_versions")
 	versionMgr, err := NewMemoryVersionManager(versionDir)
 	if err != nil {
 		logger.Printf("Failed to initialize version manager: %v", err)
