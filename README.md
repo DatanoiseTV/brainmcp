@@ -1,25 +1,32 @@
 # BrainMCP
 
-BrainMCP is a Model Context Protocol (MCP) server that provides semantic long-term memory for LLMs. It allows AI systems to store information with vector embeddings and retrieve relevant context using natural language search.
+BrainMCP is a Model Context Protocol (MCP) server that provides semantic long-term memory for LLMs with persistent context management and collaborative features. It allows AI systems to store information with vector embeddings, organize memories by context, and retrieve relevant content using natural language search.
 
 Uses the Google Gemini GenAI SDK for high-quality embeddings and chromem-go for a lightweight, local vector database.
 
 ## Features
 
 - **Semantic Search**: Retrieve memories based on conceptual meaning rather than keyword matching
+- **Context Management**: Organize memories into named contexts (topics, projects, conversations)
+- **Memory Tagging**: Categorize memories with tags for flexible organization
+- **Client Collaboration**: Share contexts between different clients for multi-user scenarios
+- **Persistent Storage**: Automatically saves and loads memory state from local binary and JSON files
+- **Graceful Shutdown**: Saves all state on exit or SIGINT (Ctrl+C)
 - **Optimized Embeddings**: Uses gemini-embedding-001 with Matryoshka Representation Learning (MRL) optimized at 768 dimensions
-- **Persistence**: Automatically saves and loads memory state from a local binary file
-- **Task-Specific Optimization**: Uses RETRIEVAL_DOCUMENT for storage and RETRIEVAL_QUERY for searching to maximize accuracy
-- **LLM-Assisted Synthesis**: Ask questions and receive conversational answers synthesized from stored memories
-- **Interactive Test Mode**: Built-in CLI for testing without requiring an MCP client
+- **Task-Specific Optimization**: Uses RETRIEVAL_DOCUMENT for storage and RETRIEVAL_QUERY for searching
+- **LLM-Assisted Synthesis**: Ask questions and receive conversational answers from stored memories
+- **Interactive Test CLI**: Built-in terminal interface for testing without needing an MCP client
 - **Modular Architecture**: Clean separation of concerns across multiple Go files
 
 ## Project Structure
 
-- `main.go` - Application entry point and server initialization
+- `main.go` - Application entry point, server initialization, graceful shutdown
+- `types.go` - Data structures for contexts, tags, and sessions
 - `constants.go` - Configuration and message constants
 - `embedder.go` - Gemini embedding functions and vector normalization
-- `handlers.go` - MCP tool handlers for all operations
+- `handlers.go` - Original MCP tool handlers (remember, search, ask, delete, list, wipe)
+- `context.go` - Context and tag management with persistence
+- `context_handlers.go` - MCP handlers for context and tag operations
 - `cli.go` - Interactive test mode CLI
 - `Makefile` - Build and development tasks
 
@@ -53,36 +60,115 @@ Optional flags:
 
 ### Interactive Test Mode
 
-Test the memory system locally:
+Test the memory system locally with context and tag support:
 
 ```bash
 make test
 ```
 
-Available commands:
-- `remember <id> <content>` - Store a new memory
+Available commands in CLI:
+- `remember <id> <content>` - Store a new memory in current context
 - `search <query>` - Search through stored memories
 - `ask <question>` - Ask a question and get conversational answers
 - `list` - Show all stored memories
 - `delete <id>` - Remove a specific memory
+- `tag <memory_id> <tag>` - Add a tag to a memory
+- `tags` - List all available tags
+- `context list` - Show all contexts
+- `context create <id> <name>` - Create a new context
+- `context switch <id>` - Switch to a different context
+- `save` - Explicitly persist state to disk
 - `wipe` - Clear all memories
-- `exit` - Close the application
+- `exit` - Close the application (auto-saves)
 
 ### MCP Server Mode
 
-Run as an MCP server:
+Run as an MCP server for use with AI clients:
 
 ```bash
 make run
 ```
 
-The server listens on stdio and provides these tools:
-- **remember** - Store memories with semantic vectors
-- **search_memory** - Semantic search through memories
-- **ask_brain** - LLM-assisted question answering
-- **list_memories** - List all stored memories
-- **delete_memory** - Remove memories
-- **wipe_all_memories** - Clear entire memory database
+## MCP Tools Reference
+
+### Memory Operations
+
+**remember** - Store memories with semantic vectors
+- `id` (required): Unique ID for this memory
+- `content` (required): The text content to remember
+- `metadata` (optional): Additional metadata
+
+**search_memory** - Semantic similarity search
+- `query` (required): Natural language search query
+
+**ask_brain** - LLM-assisted question answering
+- `question` (required): Question to answer from memories
+
+**delete_memory** - Remove a memory by ID
+- `id` (required): Memory ID to delete
+
+**list_memories** - List all stored memories with snippets
+
+**wipe_all_memories** - Clear entire brain (use with caution)
+
+### Context Management
+
+**create_context** - Create a new named context
+- `id` (required): Unique context identifier
+- `name` (required): Human-readable context name
+- `description` (optional): Description of the context
+
+**list_contexts** - Show all available contexts
+
+**switch_context** - Change current context for a client
+- `context_id` (required): Context ID to switch to
+- `client_id` (optional): Client ID (uses server default if not provided)
+
+**share_context** - Share a context with another client
+- `context_id` (required): Context to share
+- `target_client_id` (required): Client ID to share with
+
+### Tag Management
+
+**create_tag** - Create a new tag definition
+- `name` (required): Tag name
+- `description` (optional): Tag description
+- `color` (optional): Hex color for UI
+
+**add_tag** - Add a tag to a memory
+- `memory_id` (required): Memory ID to tag
+- `tag` (required): Tag to add
+
+**list_tags** - Show all available tags
+
+**search_by_tag** - Search memories by tag
+- `tag` (required): Tag to search for
+
+### Data Persistence
+
+**save_to_disk** - Explicitly persist database and context state to disk
+
+## Persistence
+
+The system maintains two persistent stores:
+
+1. **Vector Database** (`brain_memory.bin`)
+   - Stores all memories and their embeddings
+   - Auto-persisted on memory operations
+   - Saved on graceful shutdown
+
+2. **Context State** (`brain_contexts.json`)
+   - Stores all contexts, tags, and client sessions
+   - JSON format for human readability
+   - Auto-persisted on context changes
+   - Saved on graceful shutdown
+
+Both files are automatically saved when:
+- A memory is created, updated, or deleted
+- A context is created, switched, or shared
+- A tag is created or updated
+- The `save_to_disk` tool is called
+- The server receives SIGINT (Ctrl+C) or SIGTERM
 
 ## Development
 
@@ -106,17 +192,28 @@ Clean build artifacts:
 make clean
 ```
 
-## Implementation Details
+## Architecture Details
 
-The system uses a dual-task embedding strategy:
-- Documents are embedded with RETRIEVAL_DOCUMENT task type
-- Queries are embedded with RETRIEVAL_QUERY task type
+### Dual-Task Embeddings
+Documents are embedded with RETRIEVAL_DOCUMENT task type while queries use RETRIEVAL_QUERY to maximize semantic matching accuracy.
 
-This task-specific optimization ensures that searches find semantically relevant results even when query wording differs significantly from stored content.
+### Context-Aware Memory
+Each memory is tagged with its creation context and client ID, enabling multi-context support and client isolation when needed.
+
+### Session Management
+Client sessions are tracked with:
+- Client ID for identification
+- Current context association
+- Last activity timestamp
+- Shared context list for collaboration
+
+### Tag Categorization
+Tags enable flexible memory organization independent of contexts, allowing memories to be cross-referenced and discovered through multiple classification schemes.
 
 ## Version
 
-1.3.0 - Modular refactor with improved error handling and documentation
+1.4.0 - Added persistent context management, memory tagging, collaborative sharing, and graceful shutdown with Ctrl+C support
+
 
 
 ### MCP Mode (Standard)

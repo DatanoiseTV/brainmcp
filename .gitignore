@@ -4,3 +4,6 @@ brainmcp
 *.swp
 .DS_StoreTODO.md
 STRUCTURE.md
+*.json
+*.bin
+*.db

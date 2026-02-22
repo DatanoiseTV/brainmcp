@@ -2,7 +2,7 @@
 
 # Build the application
 build:
-	go build -o brainmcp main.go constants.go embedder.go handlers.go cli.go
+	go build -o brainmcp main.go constants.go embedder.go handlers.go cli.go types.go context.go context_handlers.go
 
 # Run in interactive mode
 test:
