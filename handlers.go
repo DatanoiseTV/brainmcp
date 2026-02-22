@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
+
 	"strings"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -21,7 +21,7 @@ func (a *App) askBrainHandler(ctx context.Context, request mcp.CallToolRequest) 
 		return mcp.NewToolResultError("Question cannot be empty"), nil
 	}
 
-	count := a.collection.Count()
+	count := a.vectorStore.Count()
 	if count == 0 {
 		return mcp.NewToolResultText(NoMemoriesMsg), nil
 	}
@@ -32,7 +32,7 @@ func (a *App) askBrainHandler(ctx context.Context, request mcp.CallToolRequest) 
 	}
 
 	// Use the prefix to trigger RETRIEVAL_QUERY for better accuracy
-	results, err := a.collection.Query(ctx, QueryTaskPrefix+question, nResults, nil, nil)
+	results, err := a.vectorStore.Query(ctx, QueryTaskPrefix+question, nResults, nil, nil)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Memory retrieval failed: %v", err)), nil
 	}
@@ -94,7 +94,7 @@ func (a *App) rememberHandler(ctx context.Context, request mcp.CallToolRequest) 
 		"client":   a.clientID,
 	}
 
-	err = a.collection.AddDocuments(ctx, []chromem.Document{{
+	err = a.vectorStore.AddDocuments(ctx, []chromem.Document{{
 		ID:       id,
 		Content:  content,
 		Metadata: metadata,
@@ -108,11 +108,7 @@ func (a *App) rememberHandler(ctx context.Context, request mcp.CallToolRequest) 
 		a.logger.Printf("Warning: Failed to update context count: %v", err)
 	}
 
-	// Save both database and context state
-	if err := a.db.ExportToFile(a.dbPath, true, ""); err != nil {
-		a.logger.Printf("Warning: Failed to persist memory to disk: %v", err)
-	}
-
+	// Save context state (vector store persists automatically)
 	if err := a.ctx.Save(); err != nil {
 		a.logger.Printf("Warning: Failed to save context state: %v", err)
 	}
@@ -132,9 +128,9 @@ func (a *App) searchHandler(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError("Search query cannot be empty"), nil
 	}
 
-	totalDocs := a.collection.Count()
+	totalDocs := a.vectorStore.Count()
 	if totalDocs == 0 {
-		return mcp.NewToolResultText(EmptyBrainMsg), nil
+		return mcp.NewToolResultText(NoMemoriesMsg), nil
 	}
 
 	nResults := DefaultSearchResults
@@ -142,7 +138,7 @@ func (a *App) searchHandler(ctx context.Context, request mcp.CallToolRequest) (*
 		nResults = totalDocs
 	}
 
-	results, err := a.collection.Query(ctx, QueryTaskPrefix+query, nResults, nil, nil)
+	results, err := a.vectorStore.Query(ctx, QueryTaskPrefix+query, nResults, nil, nil)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Search failed: %v", err)), nil
 	}
@@ -165,7 +161,7 @@ func (a *App) deleteHandler(ctx context.Context, request mcp.CallToolRequest) (*
 		return mcp.NewToolResultError("Memory ID cannot be empty"), nil
 	}
 
-	err := a.collection.Delete(ctx, nil, nil, id)
+	err := a.vectorStore.Delete(ctx, nil, nil, id)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Delete failed: %v", err)), nil
 	}
@@ -179,10 +175,6 @@ func (a *App) deleteHandler(ctx context.Context, request mcp.CallToolRequest) (*
 	}
 
 	// Save both database and context state
-	if err := a.db.ExportToFile(a.dbPath, true, ""); err != nil {
-		a.logger.Printf("Warning: Failed to persist deletion to disk: %v", err)
-	}
-
 	if err := a.ctx.Save(); err != nil {
 		a.logger.Printf("Warning: Failed to save context state: %v", err)
 	}
@@ -192,12 +184,12 @@ func (a *App) deleteHandler(ctx context.Context, request mcp.CallToolRequest) (*
 
 // listHandler handles the list_memories tool - returns all stored memory IDs and snippets.
 func (a *App) listHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	count := a.collection.Count()
+	count := a.vectorStore.Count()
 	if count == 0 {
-		return mcp.NewToolResultText(NoMemoriesStoredMsg), nil
+		return mcp.NewToolResultText(EmptyBrainMsg), nil
 	}
 
-	results, err := a.collection.Query(ctx, " ", count, nil, nil)
+	results, err := a.vectorStore.Query(ctx, " ", count, nil, nil)
 	if err != nil {
 		return mcp.NewToolResultError("Could not retrieve memory list"), nil
 	}
@@ -217,23 +209,14 @@ func (a *App) listHandler(ctx context.Context, request mcp.CallToolRequest) (*mc
 
 // wipeHandler handles the wipe_all_memories tool - completely clears the brain database.
 func (a *App) wipeHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	a.db.DeleteCollection(CollectionName)
-	embFunc := a.makeGeminiEmbedder()
-	col, err := a.db.GetOrCreateCollection(CollectionName, nil, embFunc)
-	if err != nil {
-		return mcp.NewToolResultError(fmt.Sprintf("Failed to recreate collection: %v", err)), nil
+	if err := a.vectorStore.ClearAll(ctx); err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to wipe memories: %v", err)), nil
 	}
-	a.collection = col
 
 	// Reset context memory counts
 	contexts := a.ctx.ListContexts()
 	for _, c := range contexts {
 		c.MemoryCount = 0
-	}
-
-	// Remove persisted database file
-	if err := os.Remove(a.dbPath); err != nil && !os.IsNotExist(err) {
-		a.logger.Printf("Warning: Failed to remove database file: %v", err)
 	}
 
 	// Save reset state

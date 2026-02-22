@@ -182,7 +182,7 @@ func (a *App) addTagHandler(ctx context.Context, request mcp.CallToolRequest) (*
 	}
 
 	// Retrieve the existing memory to update its metadata
-	memory, err := a.collection.GetByID(ctx, memoryID)
+	memory, err := a.vectorStore.GetByID(ctx, memoryID)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Memory not found: %v", err)), nil
 	}
@@ -212,19 +212,15 @@ func (a *App) addTagHandler(ctx context.Context, request mcp.CallToolRequest) (*
 		memory.Metadata["tags"] = strings.Join(tags, ",")
 
 		// Delete the old memory and re-add with updated metadata
-		if err := a.collection.Delete(ctx, nil, nil, memoryID); err != nil {
+		if err := a.vectorStore.Delete(ctx, nil, nil, memoryID); err != nil {
 			a.logger.Printf("Warning: Failed to delete old memory during tag update: %v", err)
 		}
 
-		if err := a.collection.AddDocument(ctx, memory); err != nil {
+		if err := a.vectorStore.AddDocument(ctx, memory); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Failed to update memory with tag: %v", err)), nil
 		}
 
-		// Persist the updated database
-		if err := a.db.ExportToFile(a.dbPath, true, ""); err != nil {
-			a.logger.Printf("Warning: Failed to persist memory update to disk: %v", err)
-		}
-
+		// Memory updated (vector store persists automatically)
 		if err := a.ctx.IncrementTagCount(tag); err != nil {
 			a.logger.Printf("Warning: Failed to increment tag count: %v", err)
 		}
@@ -255,12 +251,12 @@ func (a *App) searchByTagHandler(ctx context.Context, request mcp.CallToolReques
 	}
 
 	// Query all memories and filter by tag
-	totalDocs := a.collection.Count()
+	totalDocs := a.vectorStore.Count()
 	if totalDocs == 0 {
 		return mcp.NewToolResultText(EmptyBrainMsg), nil
 	}
 
-	results, err := a.collection.Query(ctx, " ", totalDocs, nil, nil)
+	results, err := a.vectorStore.Query(ctx, " ", totalDocs, nil, nil)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Search failed: %v", err)), nil
 	}
@@ -289,7 +285,7 @@ func (a *App) searchByTagHandler(ctx context.Context, request mcp.CallToolReques
 // saveToDiskHandler persists the database and context state to disk.
 func (a *App) saveToDiskHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Save vector database
-	if err := a.db.ExportToFile(a.dbPath, true, ""); err != nil {
+	if err := a.vectorStore.SaveToDisk(); err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("Failed to save vector database: %v", err)), nil
 	}
 

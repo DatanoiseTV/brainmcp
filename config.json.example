@@ -1,0 +1,13 @@
+{
+  "qdrant": {
+    "host": "your-qdrant-host.cloud.qdrant.io",
+    "port": 6334,
+    "api_key": "your-qdrant-api-key",
+    "use_tls": true,
+    "vector_dimension": 768
+  },
+  "gemini": {
+    "embedding_model": "text-embedding-004",
+    "llm_model": "gemini-1.5-flash"
+  }
+}

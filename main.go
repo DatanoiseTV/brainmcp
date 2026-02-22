@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -13,16 +12,14 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/philippgille/chromem-go"
+	//"github.com/philippgille/chromem-go"
 	"google.golang.org/genai"
 )
 
 // App encapsulates the BrainMCP server state and dependencies.
 type App struct {
-	db           *chromem.DB
-	collection   *chromem.Collection
+	vectorStore  VectorBackend
 	client       *genai.Client
-	dbPath       string
 	testMode     bool
 	modelName    string
 	llmModel     string
@@ -43,6 +40,7 @@ func main() {
 
 	// Initialize logger - output to stderr in test mode, file in MCP mode
 	var logger *log.Logger
+
 	if *testMode {
 		logger = log.New(os.Stderr, "[BrainMCP] ", log.LstdFlags|log.Lshortfile)
 	} else {
@@ -79,24 +77,40 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize vector database
-	db := chromem.NewDB()
-	
-	// Determine data directory (use home directory for safety)
+	// Load configuration
+	cfg, err := LoadConfig(logger)
+	if err != nil {
+		logger.Printf("Warning: Failed to load config: %v", err)
+		// Continue with default config
+		cfg = &Config{
+			Qdrant: QdrantConfig{UseTLS: true, VectorDimension: 768},
+		}
+	}
+
+	// Initialize data directory (use home directory for multi-instance safety)
 	dataDir := filepath.Join(os.Getenv("HOME"), ".brainmcp")
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		logger.Printf("Warning: Failed to create data directory: %v", err)
 	}
-	
+
+	// Create embedding function before vector store
+	embFunc := makeGeminiEmbedder(*modelFlag, client, logger)
+
+	// Initialize vector backend (supports local and Qdrant)
+	vectorStore, err := NewVectorBackend(cfg, embFunc, logger)
+	if err != nil {
+		logger.Printf("Failed to initialize vector backend: %v", err)
+		os.Exit(1)
+	}
+
 	app := &App{
-		db:        db,
-		client:    client,
-		dbPath:    filepath.Join(dataDir, DefaultDBPath),
-		testMode:  *testMode,
-		modelName: *modelFlag,
-		llmModel:  *llmFlag,
-		logger:    logger,
-		clientID:  "server",
+		vectorStore: vectorStore,
+		client:      client,
+		testMode:    *testMode,
+		modelName:   *modelFlag,
+		llmModel:    *llmFlag,
+		logger:      logger,
+		clientID:    "server",
 	}
 
 	// Initialize context manager for persistent contexts and tagging
@@ -114,30 +128,6 @@ func main() {
 
 	// Initialize search filter engine
 	app.filterEngine = NewSearchFilterEngine(versionMgr, contextMgr)
-
-	// Create embedding function
-	embFunc := app.makeGeminiEmbedder()
-
-	// Load persisted memories from disk if they exist (BEFORE creating collection)
-	if info, err := os.Stat(app.dbPath); err == nil && info.Size() > 0 {
-		if err := db.ImportFromFile(app.dbPath, ""); err != nil {
-			if *testMode {
-				fmt.Printf("Note: Starting fresh (DB import failed: %v)\n", err)
-			} else {
-				logger.Printf("Warning: Failed to load persisted memories: %v", err)
-			}
-		} else {
-			logger.Println("Loaded persisted memories from disk")
-		}
-	}
-
-	// Initialize or retrieve collection (after loading from disk)
-	col, err := db.GetOrCreateCollection(CollectionName, nil, embFunc)
-	if err != nil {
-		logger.Printf("Failed to create collection: %v", err)
-		os.Exit(1)
-	}
-	app.collection = col
 
 	// Run in appropriate mode
 	if *testMode {
@@ -252,13 +242,13 @@ func main() {
 // gracefulShutdown performs cleanup operations before server exit.
 // It saves the database and context state to disk.
 func (a *App) gracefulShutdown() {
-	a.logger.Println("Saving database to disk...")
+	a.logger.Println("Shutting down...")
 
-	// Save vector database
-	if err := a.db.ExportToFile(a.dbPath, true, ""); err != nil {
-		a.logger.Printf("Error saving vector database: %v", err)
+	// Close vector store
+	if err := a.vectorStore.Close(); err != nil {
+		a.logger.Printf("Error closing vector store: %v", err)
 	} else {
-		a.logger.Println("Vector database saved successfully")
+		a.logger.Println("Vector store closed successfully")
 	}
 
 	// Save context state
@@ -268,7 +258,7 @@ func (a *App) gracefulShutdown() {
 		a.logger.Println("Context state saved successfully")
 	}
 
-	// Close version manager (BadgerDB)
+	// Close version manager
 	if a.versionMgr != nil {
 		if err := a.versionMgr.Close(); err != nil {
 			a.logger.Printf("Error closing version manager: %v", err)

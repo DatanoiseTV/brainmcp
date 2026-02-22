@@ -13,7 +13,8 @@ import (
 // makeGeminiEmbedder creates an embedding function using Gemini's embedding API.
 // It automatically switches between RETRIEVAL_DOCUMENT for storage and RETRIEVAL_QUERY
 // for searches based on whether the text is prefixed with QUERY_TASK:.
-func (a *App) makeGeminiEmbedder() chromem.EmbeddingFunc {
+// This is a standalone factory function that creates the embedding function.
+func makeGeminiEmbedder(modelName string, client *genai.Client, logger interface{}) chromem.EmbeddingFunc {
 	return func(ctx context.Context, text string) ([]float32, error) {
 		taskType := TaskTypeDocument
 		if strings.HasPrefix(text, QueryTaskPrefix) {
@@ -23,7 +24,7 @@ func (a *App) makeGeminiEmbedder() chromem.EmbeddingFunc {
 
 		contents := []*genai.Content{{Parts: []*genai.Part{{Text: text}}}}
 		dim := int32(EmbeddingDimension)
-		res, err := a.client.Models.EmbedContent(ctx, a.modelName, contents, &genai.EmbedContentConfig{
+		res, err := client.Models.EmbedContent(ctx, modelName, contents, &genai.EmbedContentConfig{
 			TaskType:             taskType,
 			OutputDimensionality: &dim,
 		})
