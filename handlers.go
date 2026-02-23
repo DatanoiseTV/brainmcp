@@ -116,6 +116,79 @@ func (a *App) rememberHandler(ctx context.Context, request mcp.CallToolRequest) 
 	return mcp.NewToolResultText(fmt.Sprintf("Memory '%s' saved in context '%s'.", id, currentContext)), nil
 }
 
+// rememberBatchHandler handles storing multiple memories at once.
+func (a *App) rememberBatchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args, ok := request.Params.Arguments.(map[string]any)
+	if !ok {
+		return mcp.NewToolResultError("Invalid arguments"), nil
+	}
+
+	memoriesRaw, _ := args["memories"].([]any)
+	if len(memoriesRaw) == 0 {
+		return mcp.NewToolResultError("No memories provided"), nil
+	}
+
+	// Get client's current context
+	currentContext, err := a.ctx.GetClientContext(a.clientID)
+	if err != nil {
+		currentContext = DefaultContextID
+	}
+
+	documents := make([]chromem.Document, 0, len(memoriesRaw))
+	for _, m := range memoriesRaw {
+		mem, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		id, _ := mem["id"].(string)
+		content, _ := mem["content"].(string)
+		meta, _ := mem["metadata"].(string)
+
+		if id = strings.TrimSpace(id); id == "" {
+			continue
+		}
+		if content = strings.TrimSpace(content); content == "" {
+			continue
+		}
+
+		metadata := map[string]string{
+			"extra":   meta,
+			"context": currentContext,
+			"client":  a.clientID,
+		}
+
+		documents = append(documents, chromem.Document{
+			ID:       id,
+			Content:  content,
+			Metadata: metadata,
+		})
+	}
+
+	if len(documents) == 0 {
+		return mcp.NewToolResultError("No valid memories to store"), nil
+	}
+
+	err = a.vectorStore.AddDocuments(ctx, documents, 4) // Concurrency 4 for batch
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to store batch: %v", err)), nil
+	}
+
+	// Update context memory count
+	for range documents {
+		if err := a.ctx.IncrementMemoryCount(currentContext); err != nil {
+			a.logger.Printf("Warning: Failed to update context count: %v", err)
+		}
+	}
+
+	// Save context state
+	if err := a.ctx.Save(); err != nil {
+		a.logger.Printf("Warning: Failed to save context state: %v", err)
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Successfully stored %d memories in context '%s'.", len(documents), currentContext)), nil
+}
+
 // searchHandler handles the search_memory tool - semantic similarity search.
 func (a *App) searchHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args, ok := request.Params.Arguments.(map[string]any)

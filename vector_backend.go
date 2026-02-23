@@ -13,6 +13,9 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
+// BatchEmbeddingFunc is a function that generates embeddings for multiple texts.
+type BatchEmbeddingFunc func(ctx context.Context, texts []string) ([][]float32, error)
+
 // VectorBackend defines the interface for vector storage implementations.
 type VectorBackend interface {
 	// AddDocument stores a single document with its embedding.
@@ -44,6 +47,9 @@ type VectorBackend interface {
 
 	// SaveToDisk persists the vector store to disk.
 	SaveToDisk() error
+
+	// BatchEmbed generates embeddings for multiple texts at once.
+	BatchEmbed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
 // LocalVectorStore wraps chromem-go as our local backend.
@@ -51,12 +57,13 @@ type LocalVectorStore struct {
 	collection *chromem.Collection
 	db         *chromem.DB
 	embFunc    chromem.EmbeddingFunc
+	batchEmbf  BatchEmbeddingFunc
 	logger     *log.Logger
 	mu         sync.RWMutex
 }
 
 // NewLocalVectorStore creates a new local vector store using chromem-go.
-func NewLocalVectorStore(dbPath string, embFunc chromem.EmbeddingFunc, logger *log.Logger) (*LocalVectorStore, error) {
+func NewLocalVectorStore(dbPath string, embFunc chromem.EmbeddingFunc, batchEmbf BatchEmbeddingFunc, logger *log.Logger) (*LocalVectorStore, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
@@ -77,6 +84,7 @@ func NewLocalVectorStore(dbPath string, embFunc chromem.EmbeddingFunc, logger *l
 		collection: collection,
 		db:         db,
 		embFunc:    embFunc,
+		batchEmbf:  batchEmbf,
 		logger:     logger,
 	}
 
@@ -188,11 +196,28 @@ func (lvs *LocalVectorStore) SaveToDisk() error {
 	return nil
 }
 
+// BatchEmbed generates embeddings for multiple texts.
+func (lvs *LocalVectorStore) BatchEmbed(ctx context.Context, texts []string) ([][]float32, error) {
+	if lvs.batchEmbf != nil {
+		return lvs.batchEmbf(ctx, texts)
+	}
+	embeddings := make([][]float32, len(texts))
+	for i, text := range texts {
+		emb, err := lvs.embFunc(ctx, text)
+		if err != nil {
+			return nil, err
+		}
+		embeddings[i] = emb
+	}
+	return embeddings, nil
+}
+
 // QdrantVectorStore implements VectorBackend using Qdrant remote service.
 type QdrantVectorStore struct {
 	client    *qdrant.Client
 	collName  string
 	embFunc   chromem.EmbeddingFunc
+	batchEmbf BatchEmbeddingFunc
 	logger    *log.Logger
 	mu        sync.RWMutex
 	vectorDim uint64
@@ -206,7 +231,7 @@ type DocumentStore struct {
 }
 
 // NewQdrantVectorStore connects to a Qdrant instance and initializes a collection.
-func NewQdrantVectorStore(host string, port int, apiKey string, useTLS bool, vectorDim int, embFunc chromem.EmbeddingFunc, logger *log.Logger) (*QdrantVectorStore, error) {
+func NewQdrantVectorStore(host string, port int, apiKey string, useTLS bool, vectorDim int, embFunc chromem.EmbeddingFunc, batchEmbf BatchEmbeddingFunc, logger *log.Logger) (*QdrantVectorStore, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
@@ -226,6 +251,7 @@ func NewQdrantVectorStore(host string, port int, apiKey string, useTLS bool, vec
 		client:    client,
 		collName:  "brainmcp-memories",
 		embFunc:   embFunc,
+		batchEmbf: batchEmbf,
 		logger:    logger,
 		vectorDim: uint64(vectorDim),
 	}
@@ -271,14 +297,22 @@ func (qvs *QdrantVectorStore) AddDocuments(ctx context.Context, documents []chro
 		return nil
 	}
 
+	// Prepare texts for batch embedding
+	texts := make([]string, len(documents))
+	for i, doc := range documents {
+		texts[i] = doc.Content
+	}
+
+	// Generate embeddings in batch
+	embeddings, err := qvs.BatchEmbed(ctx, texts)
+	if err != nil {
+		return fmt.Errorf("batch embedding failed: %w", err)
+	}
+
 	points := make([]*qdrant.PointStruct, len(documents))
 
 	for i, doc := range documents {
-		// Generate embedding
-		embedding, err := qvs.embFunc(ctx, doc.Content)
-		if err != nil {
-			return fmt.Errorf("failed to embed document %q: %w", doc.ID, err)
-		}
+		embedding := embeddings[i]
 
 		// FIX 2: Use qdrant.NewVectors(slice...) instead of struct literal with unknown field.
 		vectors := qdrant.NewVectors(embedding...)
@@ -305,7 +339,7 @@ func (qvs *QdrantVectorStore) AddDocuments(ctx context.Context, documents []chro
 		}
 	}
 
-	_, err := qvs.client.Upsert(ctx, &qdrant.UpsertPoints{
+	_, err = qvs.client.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: qvs.collName,
 		Points:         points,
 	})
@@ -334,6 +368,7 @@ func (qvs *QdrantVectorStore) GetByID(ctx context.Context, id string) (chromem.D
 	points, err := qvs.client.Get(ctx, &qdrant.GetPoints{
 		CollectionName: qvs.collName,
 		Ids:            []*qdrant.PointId{qdrant.NewIDNum(pointID)},
+		WithPayload:    qdrant.NewWithPayload(true),
 	})
 	if err != nil {
 		return chromem.Document{}, fmt.Errorf("failed to get point from Qdrant: %w", err)
@@ -401,12 +436,11 @@ func (qvs *QdrantVectorStore) QueryEmbedding(ctx context.Context, queryEmbedding
 			continue
 		}
 		results = append(results, chromem.Result{
-			ID:        docStore.ID,
-			Metadata:  docStore.Metadata,
-			Embedding: nil,
-			Content:   docStore.Content,
-			// SimilarityScore is not directly available from QueryPoints scored results
-			// but can be approximated; leave as zero or populate if needed.
+			ID:         docStore.ID,
+			Metadata:   docStore.Metadata,
+			Embedding:  nil,
+			Content:    docStore.Content,
+			Similarity: 1.0 - hit.Score, // Convert similarity to distance
 		})
 	}
 
@@ -497,8 +531,24 @@ func (qvs *QdrantVectorStore) SaveToDisk() error {
 	return nil
 }
 
+// BatchEmbed generates embeddings for multiple texts.
+func (qvs *QdrantVectorStore) BatchEmbed(ctx context.Context, texts []string) ([][]float32, error) {
+	if qvs.batchEmbf != nil {
+		return qvs.batchEmbf(ctx, texts)
+	}
+	embeddings := make([][]float32, len(texts))
+	for i, text := range texts {
+		emb, err := qvs.embFunc(ctx, text)
+		if err != nil {
+			return nil, err
+		}
+		embeddings[i] = emb
+	}
+	return embeddings, nil
+}
+
 // NewVectorBackend factory function that returns the appropriate backend based on configuration.
-func NewVectorBackend(cfg *Config, embFunc chromem.EmbeddingFunc, logger *log.Logger) (VectorBackend, error) {
+func NewVectorBackend(cfg *Config, embFunc chromem.EmbeddingFunc, batchEmbf BatchEmbeddingFunc, logger *log.Logger) (VectorBackend, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
@@ -518,7 +568,7 @@ func NewVectorBackend(cfg *Config, embFunc chromem.EmbeddingFunc, logger *log.Lo
 		}
 
 		logger.Printf("Attempting to use Qdrant backend: %s:%d", qdrantHost, qdrantPort)
-		return NewQdrantVectorStore(qdrantHost, qdrantPort, qdrantAPIKey, useTLS, vectorDim, embFunc, logger)
+		return NewQdrantVectorStore(qdrantHost, qdrantPort, qdrantAPIKey, useTLS, vectorDim, embFunc, batchEmbf, logger)
 	}
 
 	// Use local chromem-go backend as default
@@ -531,7 +581,7 @@ func NewVectorBackend(cfg *Config, embFunc chromem.EmbeddingFunc, logger *log.Lo
 		dataDir = home + "/.brainmcp"
 	}
 
-	return NewLocalVectorStore(dataDir+"/brain_memory.bin", embFunc, logger)
+	return NewLocalVectorStore(dataDir+"/brain_memory.bin", embFunc, batchEmbf, logger)
 }
 
 // hashStringToUint64 converts a string ID to uint64 for Qdrant point IDs.

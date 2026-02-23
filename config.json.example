@@ -1,4 +1,5 @@
 {
+  "embedding_provider": "gemini",
   "qdrant": {
     "host": "your-qdrant-host.cloud.qdrant.io",
     "port": 6334,
@@ -7,7 +8,12 @@
     "vector_dimension": 768
   },
   "gemini": {
+    "api_key": "your-gemini-api-key",
     "embedding_model": "text-embedding-004",
     "llm_model": "gemini-1.5-flash"
+  },
+  "lmstudio": {
+    "base_url": "http://localhost:1234/v1",
+    "embedding_model": "nomic-embed-text-v1.5"
   }
 }

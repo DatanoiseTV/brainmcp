@@ -11,8 +11,10 @@ import (
 
 // Config holds application configuration from ~/.brainmcp/config.json
 type Config struct {
-	Qdrant QdrantConfig `json:"qdrant,omitempty"`
-	Gemini GeminiConfig `json:"gemini,omitempty"`
+	EmbeddingProvider string         `json:"embedding_provider,omitempty"` // "gemini" or "lmstudio"
+	Qdrant            QdrantConfig   `json:"qdrant,omitempty"`
+	Gemini            GeminiConfig   `json:"gemini,omitempty"`
+	LMStudio          LMStudioConfig `json:"lmstudio,omitempty"`
 }
 
 // QdrantConfig holds Qdrant connection settings.
@@ -26,8 +28,15 @@ type QdrantConfig struct {
 
 // GeminiConfig holds Gemini model settings.
 type GeminiConfig struct {
+	APIKey         string `json:"api_key,omitempty"`
 	EmbeddingModel string `json:"embedding_model,omitempty"`
 	LLMModel       string `json:"llm_model,omitempty"`
+}
+
+// LMStudioConfig holds LM Studio connection settings.
+type LMStudioConfig struct {
+	BaseURL        string `json:"base_url,omitempty"`
+	EmbeddingModel string `json:"embedding_model,omitempty"`
 }
 
 // LoadConfig reads configuration from ~/.brainmcp/config.json
@@ -67,6 +76,18 @@ func LoadConfig(logger *log.Logger) (*Config, error) {
 			if tlsStr := os.Getenv("QDRANT_USE_TLS"); tlsStr != "" {
 				cfg.Qdrant.UseTLS = tlsStr == "1" || tlsStr == "true"
 			}
+			if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" {
+				cfg.Gemini.APIKey = geminiKey
+			}
+			if provider := os.Getenv("EMBEDDING_PROVIDER"); provider != "" {
+				cfg.EmbeddingProvider = provider
+			}
+			if baseURL := os.Getenv("LMSTUDIO_BASE_URL"); baseURL != "" {
+				cfg.LMStudio.BaseURL = baseURL
+			}
+			if model := os.Getenv("LMSTUDIO_EMBEDDING_MODEL"); model != "" {
+				cfg.LMStudio.EmbeddingModel = model
+			}
 			return cfg, nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -94,6 +115,19 @@ func LoadConfig(logger *log.Logger) (*Config, error) {
 		cfg.Qdrant.UseTLS = tlsStr == "1" || tlsStr == "true"
 	}
 
+	if provider := os.Getenv("EMBEDDING_PROVIDER"); provider != "" {
+		cfg.EmbeddingProvider = provider
+	}
+	if baseURL := os.Getenv("LMSTUDIO_BASE_URL"); baseURL != "" {
+		cfg.LMStudio.BaseURL = baseURL
+	}
+	if model := os.Getenv("LMSTUDIO_EMBEDDING_MODEL"); model != "" {
+		cfg.LMStudio.EmbeddingModel = model
+	}
+
+	if geminiKey := os.Getenv("GEMINI_API_KEY"); geminiKey != "" {
+		cfg.Gemini.APIKey = geminiKey
+	}
 	if embModel := os.Getenv("GEMINI_EMBEDDING_MODEL"); embModel != "" {
 		cfg.Gemini.EmbeddingModel = embModel
 	}
@@ -105,6 +139,22 @@ func LoadConfig(logger *log.Logger) (*Config, error) {
 	if cfg.Qdrant.VectorDimension == 0 {
 		cfg.Qdrant.VectorDimension = 768 // Default for Gemini embeddings
 	}
+
+	// Default provider if not set
+	if cfg.EmbeddingProvider == "" {
+		cfg.EmbeddingProvider = "gemini"
+	}
+
+	// Set LM Studio defaults if chosen
+	if cfg.EmbeddingProvider == "lmstudio" {
+		if cfg.LMStudio.BaseURL == "" {
+			cfg.LMStudio.BaseURL = "http://localhost:1234/v1"
+		}
+		if cfg.LMStudio.EmbeddingModel == "" {
+			cfg.LMStudio.EmbeddingModel = "nomic-embed-text-v1.5"
+		}
+	}
+
 	if !cfg.Qdrant.UseTLS && cfg.Qdrant.Port == 0 {
 		// If UseTLS not explicitly set, default to true
 		cfg.Qdrant.UseTLS = true

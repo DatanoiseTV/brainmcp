@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -12,7 +13,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	//"github.com/philippgille/chromem-go"
+	"github.com/philippgille/chromem-go"
 	"google.golang.org/genai"
 )
 
@@ -58,11 +59,25 @@ func main() {
 		}
 	}
 
+	// Load configuration
+	cfg, err := LoadConfig(logger)
+	if err != nil {
+		logger.Printf("Warning: Failed to load config: %v", err)
+		// Continue with default config
+		cfg = &Config{
+			Qdrant: QdrantConfig{UseTLS: true, VectorDimension: 768},
+		}
+	}
+
 	// Validate Gemini API key
-	geminiKey := os.Getenv("GEMINI_API_KEY")
+	geminiKey := cfg.Gemini.APIKey
+	if geminiKey == "" {
+		geminiKey = os.Getenv("GEMINI_API_KEY")
+	}
+
 	if geminiKey == "" {
 		if *testMode {
-			logger.Fatal("GEMINI_API_KEY environment variable is required")
+			logger.Fatal("GEMINI_API_KEY environment variable or config is required")
 		}
 		// In MCP mode, exit silently
 		os.Exit(1)
@@ -77,16 +92,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load configuration
-	cfg, err := LoadConfig(logger)
-	if err != nil {
-		logger.Printf("Warning: Failed to load config: %v", err)
-		// Continue with default config
-		cfg = &Config{
-			Qdrant: QdrantConfig{UseTLS: true, VectorDimension: 768},
-		}
-	}
-
 	// Initialize data directory (use home directory for multi-instance safety)
 	dataDir := filepath.Join(os.Getenv("HOME"), ".brainmcp")
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
@@ -94,10 +99,24 @@ func main() {
 	}
 
 	// Create embedding function before vector store
-	embFunc := makeGeminiEmbedder(*modelFlag, client, logger)
+	var embFunc chromem.EmbeddingFunc
+	var batchEmbFunc BatchEmbeddingFunc
+	if cfg.EmbeddingProvider == "lmstudio" {
+		logger.Printf("Using LM Studio embedding provider: %s (model: %s)", cfg.LMStudio.BaseURL, cfg.LMStudio.EmbeddingModel)
+		embFunc = makeLMStudioEmbedder(cfg.LMStudio.BaseURL, cfg.LMStudio.EmbeddingModel, logger)
+		batchEmbFunc = func(ctx context.Context, texts []string) ([][]float32, error) {
+			return batchEmbedLMStudio(ctx, cfg.LMStudio.BaseURL, cfg.LMStudio.EmbeddingModel, texts)
+		}
+	} else {
+		logger.Printf("Using Gemini embedding provider (model: %s)", *modelFlag)
+		embFunc = makeGeminiEmbedder(*modelFlag, client, logger)
+		batchEmbFunc = func(ctx context.Context, texts []string) ([][]float32, error) {
+			return batchEmbedGemini(ctx, client, *modelFlag, texts)
+		}
+	}
 
 	// Initialize vector backend (supports local and Qdrant)
-	vectorStore, err := NewVectorBackend(cfg, embFunc, logger)
+	vectorStore, err := NewVectorBackend(cfg, embFunc, batchEmbFunc, logger)
 	if err != nil {
 		logger.Printf("Failed to initialize vector backend: %v", err)
 		os.Exit(1)
@@ -110,7 +129,7 @@ func main() {
 		modelName:   *modelFlag,
 		llmModel:    *llmFlag,
 		logger:      logger,
-		clientID:    "server",
+		clientID:    fmt.Sprintf("session-%d", os.Getpid()),
 	}
 
 	// Initialize context manager for persistent contexts and tagging
@@ -145,6 +164,11 @@ func main() {
 		mcp.WithString("content", mcp.Required(), mcp.Description("The text content to remember")),
 		mcp.WithString("metadata", mcp.Description("Optional metadata")),
 	), app.rememberHandler)
+
+	s.AddTool(mcp.NewTool("remember_batch",
+		mcp.WithDescription("Stores multiple memories at once with semantic vectors. Efficient for bulk ingestion."),
+		mcp.WithArray("memories", mcp.Required(), mcp.Description("List of objects with 'id', 'content', and optional 'metadata'")),
+	), app.rememberBatchHandler)
 
 	s.AddTool(mcp.NewTool("search_memory",
 		mcp.WithDescription("Search memory using semantic similarity. Returns raw snippets."),
